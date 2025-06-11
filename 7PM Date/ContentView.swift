@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 //
 //  ContentView.swift
 //  7PM Date
@@ -6,18 +5,7 @@
 //  Created by Austin Berger on 6/10/25.
 //
 
-import SwiftUI
 
-struct ContentView: View {
-    var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
-=======
 import SwiftUI
 
 struct ContentView: View {
@@ -39,14 +27,6 @@ struct ContentView: View {
 
             Spacer()
         }
->>>>>>> 879be4f (Initial Commit)
     }
 }
 
-#Preview {
-<<<<<<< HEAD
-    ContentView()
-=======
-    ContentView().environmentObject(AuthManager())
->>>>>>> 879be4f (Initial Commit)
-}
