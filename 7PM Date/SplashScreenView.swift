@@ -9,16 +9,27 @@ import SwiftUI
 
 struct SplashScreenView: View {
     @EnvironmentObject var authManager: AuthManager
-    @State private var isActive = false
+    @State private var isActive = false // Controls opacity and fade-out animation
+
+    @State private var isMinimumTimeElapsed = false
+    @State private var isAuthStatusKnown = false
+
+    var onFinished: () -> Void // Callback for when the splash screen is done
 
     var body: some View {
         ZStack {
-            Color(.systemBackground)
-                .ignoresSafeArea()
+            // New background gradient
+            LinearGradient(
+                gradient: Gradient(colors: [Color(UIColor.systemGray6), Color(UIColor.systemBackground)]), // Blending from light gray to system background color
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+            
+            // Content with AnimatedClockView
             VStack {
-                Image(systemName: "clock")
-                    .resizable()
-                    .frame(width: 80, height: 80)
+                AnimatedClockView() // Using default target of 7 PM
+                    .frame(width: 100, height: 100) // Giving it a slightly larger frame than the SF Symbol, adjust as needed
                     .padding()
                 Text("7PM Date")
                     .font(.largeTitle)
@@ -26,19 +37,44 @@ struct SplashScreenView: View {
             }
         }
         .opacity(isActive ? 0 : 1)
+        // The animation is triggered when 'isActive' changes.
+        // When isActive becomes true, the view fades out.
         .animation(.easeInOut(duration: 0.3), value: isActive)
         .onAppear {
-            // Show splash for 2 seconds, then fade out
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-                // Remove the line below. AuthManager will set its own state.
-                // authManager.isAuthenticated = false
-                isActive = true // This will just fade out the splash screen
+            // Start a 7-second timer for minimum display time
+            DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
+                isMinimumTimeElapsed = true
             }
-            // authManager.checkInitialCloudKitStatus() is implicitly called by AuthManager's init()
+            
+            // Initial check for auth status
+            if authManager.isAuthenticated != nil {
+                isAuthStatusKnown = true
+            }
+        }
+        // Monitor authManager.isAuthenticated for changes
+        .onChange(of: authManager.isAuthenticated) { newValue in
+            if newValue != nil {
+                isAuthStatusKnown = true
+            }
+        }
+        // Monitor combined state to trigger fade-out
+        .onChange(of: [isMinimumTimeElapsed, isAuthStatusKnown]) { newValues in
+            let canProceed = newValues[0] // isMinimumTimeElapsed
+            let authKnown = newValues[1] // isAuthStatusKnown
+            
+            if canProceed && authKnown && !isActive {
+                isActive = true // Start fade-out
+                // Call onFinished after the animation completes
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { // Matches animation duration
+                    onFinished()
+                }
+            }
         }
     }
 }
 
+// Update preview to provide a dummy onFinished and AuthManager
 #Preview {
-    SplashScreenView().environmentObject(AuthManager())
+    SplashScreenView(onFinished: { print("Splash finished") })
+        .environmentObject(AuthManager())
 }
