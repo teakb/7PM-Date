@@ -20,7 +20,7 @@ struct SplashScreenView: View {
         ZStack {
             // New background gradient
             LinearGradient(
-                gradient: Gradient(colors: [Color(UIColor.systemGray6), Color(UIColor.systemBackground)]), // Blending from light gray to system background color
+                gradient: Gradient(colors: [Color.red, Color.yellow]), // Changed colors
                 startPoint: .top,
                 endPoint: .bottom
             )

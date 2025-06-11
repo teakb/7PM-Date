@@ -29,164 +29,225 @@ struct OnboardingStepsView: View {
     let cities = ["Oceanside", "Carlsbad", "Encinitas", "La Jolla", "Hillcrest"]
     let genders = ["Male", "Female", "Non-binary", "Other"]
 
+    // MARK: - Sections
+    private var profileBasicsSection: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Text("Profile Basics")
+                .font(.title2).bold()
+                .padding(.bottom, 5)
+            
+            // Name Input
+            VStack(alignment: .leading) {
+                Text("Your Name").font(.headline)
+                TextField("Name", text: $name)
+                    .padding(.vertical, 10)
+                    .padding(.horizontal)
+                    .background(Color(UIColor.systemGray6))
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                    )
+                    .textContentType(.name)
+            }
+            .padding(.bottom, 10)
+
+            // Age Input
+            VStack(alignment: .leading) {
+                Text("Your Age").font(.headline)
+                TextField("Age", value: $age, formatter: NumberFormatter())
+                    .keyboardType(.numberPad)
+                    .padding(.vertical, 10)
+                    .padding(.horizontal)
+                    .background(Color(UIColor.systemGray6))
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                    )
+                    .frame(width: 100) // Adjusted frame for padding
+            }
+            .padding(.bottom, 10)
+            
+            // Gender Picker
+            VStack(alignment: .leading) {
+                Text("Your Gender").font(.headline)
+                Picker("Gender", selection: $gender) {
+                    ForEach(genders, id: \.self) { genderItem in // Renamed to avoid conflict
+                        Text(genderItem).tag(genderItem)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(.blue)
+            }
+        }
+        .padding() // Padding for the whole section
+        .background(Color(UIColor.secondarySystemGroupedBackground)) // Optional: card-like bg
+        .cornerRadius(12) // Optional: card-like bg
+        .padding(.bottom) // Space between sections
+    }
+
+    private var locationPreferencesSection: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Text("Your Location Preferences")
+                .font(.title2).bold()
+                .padding(.bottom, 5)
+            
+            Text("Select up to 5 cities you're interested in:").font(.subheadline) // Changed from .headline
+            VStack(alignment: .leading, spacing: 8) { // Replaced FlowLayout with VStack
+                ForEach(cities, id: \.self) { city in
+                    Button(action: {
+                        if selectedCities.contains(city) {
+                            selectedCities.remove(city)
+                        } else if selectedCities.count < 5 {
+                            selectedCities.insert(city)
+                        }
+                    }) {
+                        Text(city)
+                            .font(.system(size: 14, weight: .medium))
+                            .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                            .foregroundColor(selectedCities.contains(city) ? .white : .primary)
+                            .background(selectedCities.contains(city) ? Color.blue : Color(UIColor.systemGray5))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding()
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+        .padding(.bottom)
+    }
+
+    private var photoUploadSection: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Text("Upload Your Photos")
+                .font(.title2).bold()
+                .padding(.bottom, 5)
+
+            Text("Upload 3 photos:").font(.subheadline)
+            HStack(spacing: 15) {
+                ForEach(0..<3) { idx in
+                    VStack { // Wrap ZStack and Text in a VStack
+                        ZStack {
+                            if let img = images[idx] {
+                                Image(uiImage: img)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 100, height: 100)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10)) // Consistent corner radius
+                            } else {
+                                RoundedRectangle(cornerRadius: 10) // Consistent corner radius
+                                    .fill(Color(UIColor.systemGray6))
+                                    .frame(width: 100, height: 100)
+                                    .overlay(
+                                        Image(systemName: "photo.on.rectangle.angled")
+                                            .font(.largeTitle)
+                                            .foregroundColor(Color(UIColor.systemGray2))
+                                    )
+                            }
+                        }
+                        .onTapGesture {
+                            currentImageSelectionIndex = idx
+                            showingImagePicker = true
+                        }
+                        Text("Photo \(idx + 1)")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .padding()
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+        .padding(.bottom)
+    }
+
+    private var datingPreferencesSection: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Text("Your Dating Preferences")
+                .font(.title2).bold()
+                .padding(.bottom, 5)
+
+            // Desired Age Range Slider
+            VStack(alignment: .leading) {
+                Text("Desired age range:").font(.subheadline) // Changed from .headline
+                RangeSlider(range: $desiredAgeRange, in: 18...60)
+                Text("From \(desiredAgeRange.lowerBound) to \(desiredAgeRange.upperBound) years old")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                    .frame(maxWidth: .infinity, alignment: .center) // Center the caption
+            }
+            .padding(.bottom, 10)
+            
+            // Desired Genders Selection
+            VStack(alignment: .leading) {
+                Text("Interested in:").font(.subheadline) // Changed from .headline
+                VStack(alignment: .leading, spacing: 8) { // Replaced FlowLayout with VStack
+                    ForEach(genders, id: \.self) { genderItem in // Renamed to avoid conflict
+                        Button(action: {
+                            if desiredGenders.contains(genderItem) {
+                                desiredGenders.remove(genderItem)
+                            } else {
+                                desiredGenders.insert(genderItem)
+                            }
+                        }) {
+                            Text(genderItem)
+                                .font(.system(size: 14, weight: .medium))
+                                .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                                .foregroundColor(desiredGenders.contains(genderItem) ? .white : .primary)
+                                .background(desiredGenders.contains(genderItem) ? Color.blue : Color(UIColor.systemGray5))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding()
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+        .padding(.bottom)
+    }
+
+    private var submitButtonSection: some View {
+        Button {
+            isSaving = true // Indicate saving process has started
+            saveUserProfileToCloudKit()
+        } label: {
+            if isSaving {
+                ProgressView() // Show a loading indicator
+                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+            } else {
+                Text("Complete Onboarding")
+                    .fontWeight(.semibold) // Added font weight
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(formIsComplete && !isSaving ? Color.blue : Color.gray)
+        .foregroundColor(.white)
+        .clipShape(Capsule()) // Changed cornerRadius to Capsule
+        .disabled(!formIsComplete || isSaving)
+        .padding(.top, 20)
+    }
+
     // MARK: - Main View Body
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                Text("Tell Us About Yourself")
-                    .font(.largeTitle)
-                    .bold()
-                
-                // Name Input
-                Group {
-                    Text("Your Name").font(.headline)
-                    TextField("Name", text: $name)
-                        .textFieldStyle(.roundedBorder)
-                        .textContentType(.name) // Semantic type for autofill
-                }
+            VStack(alignment: .leading, spacing: 24) { // Increased main spacing
+                Text("Create Your Profile") // Updated overall title
+                    .font(.largeTitle).bold()
+                    .padding(.bottom)
 
-                // Age Input
-                Group {
-                    Text("Your Age").font(.headline)
-                    TextField("Age", value: $age, formatter: NumberFormatter())
-                        .keyboardType(.numberPad)
-                        .frame(width: 80)
-                        .textFieldStyle(.roundedBorder)
-                }
-                
-                // Gender Picker
-                Group {
-                    Text("Your Gender").font(.headline)
-                    Picker("Gender", selection: $gender) {
-                        ForEach(genders, id: \.self) { gender in
-                            Text(gender).tag(gender) // Ensure tag is set for Picker
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .tint(.blue) // Apply tint to make picker visible and tappable
-                }
-
-                // Cities Selection (using custom FlowLayout for better wrapping)
-                Group {
-                    Text("Select up to 5 cities you're interested in:").font(.headline)
-                    FlowLayout(alignment: .leading, spacing: 8) {
-                        ForEach(cities, id: \.self) { city in
-                            Button(action: {
-                                if selectedCities.contains(city) {
-                                    selectedCities.remove(city)
-                                } else if selectedCities.count < 5 { // Limit to 5 cities
-                                    selectedCities.insert(city)
-                                }
-                            }) {
-                                HStack {
-                                    Image(systemName: selectedCities.contains(city) ? "checkmark.square.fill" : "square")
-                                        .foregroundColor(.blue)
-                                    Text(city)
-                                        .foregroundColor(.primary)
-                                }
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 12)
-                                .background(selectedCities.contains(city) ? Color.blue.opacity(0.2) : Color.clear)
-                                .cornerRadius(8)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.blue, lineWidth: 1)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-
-                // Photo Upload Section
-                Group {
-                    Text("Upload 3 photos:").font(.headline)
-                    HStack {
-                        ForEach(0..<3) { idx in
-                            ZStack {
-                                if let img = images[idx] {
-                                    Image(uiImage: img)
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(width: 100, height: 100)
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                                } else {
-                                    Rectangle()
-                                        .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [5, 5]))
-                                        .frame(width: 100, height: 100)
-                                        .background(Color(UIColor.systemGray6))
-                                        .cornerRadius(8)
-                                        .overlay(Image(systemName: "plus").font(.largeTitle).foregroundColor(.gray))
-                                }
-                            }
-                            .onTapGesture {
-                                currentImageSelectionIndex = idx
-                                showingImagePicker = true
-                            }
-                        }
-                    }
-                }
-
-                // Desired Age Range Slider
-                Group {
-                    Text("Desired age range:").font(.headline)
-                    RangeSlider(range: $desiredAgeRange, in: 18...60)
-                    Text("From \(desiredAgeRange.lowerBound) to \(desiredAgeRange.upperBound) years old")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                }
-                
-                // Desired Genders Selection
-                Group {
-                    Text("Interested in:").font(.headline)
-                    FlowLayout(alignment: .leading, spacing: 8) {
-                        ForEach(genders, id: \.self) { gender in
-                            Button(action: {
-                                if desiredGenders.contains(gender) {
-                                    desiredGenders.remove(gender)
-                                } else {
-                                    desiredGenders.insert(gender)
-                                }
-                            }) {
-                                HStack {
-                                    Image(systemName: desiredGenders.contains(gender) ? "checkmark.square.fill" : "square")
-                                        .foregroundColor(.blue)
-                                    Text(gender)
-                                        .foregroundColor(.primary)
-                                }
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 12)
-                                .background(desiredGenders.contains(gender) ? Color.blue.opacity(0.2) : Color.clear)
-                                .cornerRadius(8)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.blue, lineWidth: 1)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-
-                // Submit Button
-                Button {
-                    isSaving = true // Indicate saving process has started
-                    saveUserProfileToCloudKit()
-                } label: {
-                    if isSaving {
-                        ProgressView() // Show a loading indicator
-                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                    } else {
-                        Text("Complete Onboarding")
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(formIsComplete && !isSaving ? Color.blue : Color.gray)
-                .foregroundColor(.white)
-                .cornerRadius(12)
-                .disabled(!formIsComplete || isSaving) // Disable if form not complete OR saving
-                .padding(.top, 20)
+                profileBasicsSection
+                locationPreferencesSection
+                photoUploadSection
+                datingPreferencesSection
+                submitButtonSection
             }
             .padding()
         }
@@ -385,10 +446,37 @@ struct OnboardingStepsView: View {
         }
     }
 
-    // Helper to convert UIImage to CKAsset (by saving to temp file)
+    // Helper function to resize UIImage (can be nested or outside)
+    func resizeImage(image: UIImage, maxDimension: CGFloat) -> UIImage {
+        let size = image.size
+        let scale: CGFloat
+        if size.width > size.height {
+            scale = maxDimension / size.width
+        } else {
+            scale = maxDimension / size.height
+        }
+
+        // Don't scale up if the image is already smaller than maxDimension
+        if scale >= 1.0 { return image }
+
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+        
+        // Using UIGraphicsImageRenderer for modern, efficient rendering
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        let resizedImage = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+        }
+        
+        return resizedImage
+    }
+
+    // Modified createCKAsset function
     func createCKAsset(from image: UIImage, fileName: String) -> CKAsset? {
-        guard let data = image.jpegData(compressionQuality: 0.8) else {
-            print("Failed to get JPEG data from image.")
+        // Resize the image first
+        let resizedImage = resizeImage(image: image, maxDimension: 1920) // Max dimension of 1920px
+
+        guard let data = resizedImage.jpegData(compressionQuality: 0.75) else { // Adjusted compression if needed
+            print("Failed to get JPEG data from resized image.")
             return nil
         }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
@@ -396,7 +484,7 @@ struct OnboardingStepsView: View {
             try data.write(to: url)
             return CKAsset(fileURL: url)
         } catch {
-            print("Error creating CKAsset from image: \(error.localizedDescription)")
+            print("Error creating CKAsset from resized image: \(error.localizedDescription)")
             return nil
         }
     }
@@ -447,15 +535,34 @@ struct ImagePicker: UIViewControllerRepresentable {
             self.parent = parent
         }
 
+        // Inside ImagePicker.Coordinator
         func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-            if let image = info[.originalImage] as? UIImage {
-                parent.selectedImage = image
-            }
-            parent.presentationMode.wrappedValue.dismiss()
-        }
+            // Move image processing to a background thread
+            DispatchQueue.global(qos: .userInitiated).async {
+                var finalImage: UIImage? = nil
+                if let image = info[.originalImage] as? UIImage {
+                    // If further processing like resizing or format conversion was needed,
+                    // it would happen here on this background thread.
+                    finalImage = image
+                }
 
+                // Switch back to the main thread to update the UI and dismiss the picker
+                DispatchQueue.main.async {
+                    self.parent.selectedImage = finalImage
+                    self.parent.presentationMode.wrappedValue.dismiss()
+                }
+            }
+            // Note: Dismissal is now also on the main thread after image processing.
+            // If image processing is quick, this is fine. If it could be long,
+            // consider dismissing earlier on the main thread right after picker.dismiss if UI feels unresponsive.
+            // However, the original code dismissed after setting the image.
+        }
+    
+        // Ensure imagePickerControllerDidCancel is also robust
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            parent.presentationMode.wrappedValue.dismiss()
+            DispatchQueue.main.async { // Ensure dismissal is on main thread
+                self.parent.presentationMode.wrappedValue.dismiss()
+            }
         }
     }
 }
@@ -494,15 +601,29 @@ struct PhotoPicker: UIViewControllerRepresentable {
             guard let result = results.first else { return }
 
             if result.itemProvider.canLoadObject(ofClass: UIImage.self) {
-                result.itemProvider.loadObject(ofClass: UIImage.self) { [weak self] image, error in
-                    DispatchQueue.main.async {
-                        if let image = image as? UIImage {
-                            self?.parent.selectedImage = image
-                        } else {
-                            print("Error loading image from PHPicker: \(error?.localizedDescription ?? "unknown")")
+                // Start progress indication if possible/desired (outside this immediate scope)
+                result.itemProvider.loadObject(ofClass: UIImage.self) { [weak self] object, error in
+                    // Perform image processing on a background thread
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        var finalImage: UIImage? = nil
+                        if let image = object as? UIImage {
+                            // If further processing like resizing or format conversion was needed,
+                            // it would happen here on this background thread.
+                            // For now, we just ensure UIImage creation is backgrounded.
+                            finalImage = image
+                        } else if let error = error {
+                            print("Error loading image from PHPicker: \(error.localizedDescription)")
+                        }
+
+                        // Switch back to the main thread to update the UI
+                        DispatchQueue.main.async {
+                            self?.parent.selectedImage = finalImage
+                            // Stop progress indication if started
                         }
                     }
                 }
+            } else if let error = results.first?.itemProvider.loadObject(ofClass: UIImage.self, completionHandler: { _, e in e } ) as? Error { // A bit of a hack to get an error if canLoadObject is false
+                print("Error: Cannot load UIImage from selected item. Error: \(error.localizedDescription)")
             }
         }
     }
