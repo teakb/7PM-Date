@@ -3,8 +3,8 @@ import CloudKit // Import CloudKit for saving data
 import PhotosUI // For modern image picker (iOS 14+)
 
 // This is the complete and updated OnboardingStepsView.swift file.
-// It includes fixes for the previous compilation errors, UI responsiveness,
-// and robust CloudKit saving logic.
+// It includes the new home city selection, fixes for the previous compilation errors,
+// UI responsiveness, and robust CloudKit saving logic.
 
 struct OnboardingStepsView: View {
     @EnvironmentObject var authManager: AuthManager // Access AuthManager
@@ -13,6 +13,7 @@ struct OnboardingStepsView: View {
     @State private var name: String = ""
     @State private var age: Int = 21
     @State private var gender: String = "Male" // Default to avoid empty initial state
+    @State private var homeCity: String = "" // NEW: For user's home city
     @State private var selectedCities: Set<String> = []
     @State private var images: [UIImage?] = [nil, nil, nil] // Array to hold 3 selected images
     @State private var desiredAgeRange: ClosedRange<Int> = 21...30
@@ -85,6 +86,37 @@ struct OnboardingStepsView: View {
         .background(Color(UIColor.secondarySystemGroupedBackground)) // Optional: card-like bg
         .cornerRadius(12) // Optional: card-like bg
         .padding(.bottom) // Space between sections
+    }
+
+    // NEW: Section for selecting the user's home city
+    private var homeCitySection: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Text("Your Home City")
+                .font(.title2).bold()
+                .padding(.bottom, 5)
+
+            Text("Select the city you are from:").font(.subheadline)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(cities, id: \.self) { city in
+                    Button(action: {
+                        // This enforces a single selection
+                        homeCity = city
+                    }) {
+                        Text(city)
+                            .font(.system(size: 14, weight: .medium))
+                            .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                            .foregroundColor(homeCity == city ? .white : .primary)
+                            .background(homeCity == city ? Color.blue : Color(UIColor.systemGray5))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding()
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+        .padding(.bottom)
     }
 
     private var locationPreferencesSection: some View {
@@ -244,6 +276,7 @@ struct OnboardingStepsView: View {
                     .padding(.bottom)
 
                 profileBasicsSection
+                homeCitySection // NEW: Added home city section
                 locationPreferencesSection
                 photoUploadSection
                 datingPreferencesSection
@@ -291,7 +324,7 @@ struct OnboardingStepsView: View {
 
     // MARK: - Computed Property for Form Validation
     var formIsComplete: Bool {
-        !name.isEmpty && age >= 18 && !gender.isEmpty && !selectedCities.isEmpty && images.allSatisfy { $0 != nil } && !desiredGenders.isEmpty
+        !name.isEmpty && age >= 18 && !gender.isEmpty && !homeCity.isEmpty && !selectedCities.isEmpty && images.allSatisfy { $0 != nil } && !desiredGenders.isEmpty
     }
 
     // MARK: - CloudKit Saving Function
@@ -312,6 +345,7 @@ struct OnboardingStepsView: View {
         userProfileRecord["name"] = name as CKRecordValue
         userProfileRecord["age"] = age as CKRecordValue
         userProfileRecord["gender"] = gender as CKRecordValue
+        userProfileRecord["homeCity"] = homeCity as CKRecordValue // NEW: Save home city
         userProfileRecord["cities"] = Array(selectedCities) as CKRecordValue // CloudKit supports String List
         userProfileRecord["desiredAgeLowerBound"] = desiredAgeRange.lowerBound as CKRecordValue
         userProfileRecord["desiredAgeUpperBound"] = desiredAgeRange.upperBound as CKRecordValue
@@ -324,6 +358,7 @@ struct OnboardingStepsView: View {
         print("Name: \(userProfileRecord["name"] as? String ?? "N/A")")
         print("Age: \(userProfileRecord["age"] as? Int ?? -1)")
         print("Gender: \(userProfileRecord["gender"] as? String ?? "N/A")")
+        print("Home City: \(userProfileRecord["homeCity"] as? String ?? "N/A")") // NEW: Print home city
         print("Cities: \(userProfileRecord["cities"] as? [String] ?? [])")
         print("Desired Age Lower Bound: \(userProfileRecord["desiredAgeLowerBound"] as? Int ?? -1)")
         print("Desired Age Upper Bound: \(userProfileRecord["desiredAgeUpperBound"] as? Int ?? -1)")
@@ -412,6 +447,7 @@ struct OnboardingStepsView: View {
                     existingRecord["name"] = newRecordData["name"]
                     existingRecord["age"] = newRecordData["age"]
                     existingRecord["gender"] = newRecordData["gender"]
+                    existingRecord["homeCity"] = newRecordData["homeCity"] // NEW: Update home city
                     existingRecord["cities"] = newRecordData["cities"]
                     existingRecord["desiredAgeLowerBound"] = newRecordData["desiredAgeLowerBound"]
                     existingRecord["desiredAgeUpperBound"] = newRecordData["desiredAgeUpperBound"]
