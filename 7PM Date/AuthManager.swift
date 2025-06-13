@@ -1,3 +1,4 @@
+// AuthManager.swift
 import Combine
 import AuthenticationServices
 import CloudKit

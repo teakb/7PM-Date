@@ -337,6 +337,7 @@ struct OnboardingStepsView: View {
         }
 
         let privateDatabase = CKContainer.default().privateCloudDatabase
+        let publicDatabase = CKContainer.default().publicCloudDatabase
         
         // Create a new CKRecord with our custom UserProfile record type and the user's unique Apple ID
         let userProfileRecord = CKRecord(recordType: "UserProfile", recordID: userRecordID)
@@ -399,7 +400,6 @@ struct OnboardingStepsView: View {
             // Save the record to CloudKit
             privateDatabase.save(userProfileRecord) { (record, error) in
                 DispatchQueue.main.async { // Ensure UI updates and state changes happen on the main thread
-                    self.isSaving = false // Reset saving state after completion (success or failure)
                     if let error = error {
                         if let ckError = error as? CKError {
                             print("CloudKit save error code: \(ckError.code.rawValue) - \(ckError.localizedDescription)")
@@ -426,10 +426,28 @@ struct OnboardingStepsView: View {
                             self.alertMessage = "Failed to save profile: \(error.localizedDescription)"
                         }
                         self.showingAlert = true
+                        self.isSaving = false
                     } else if let _ = record {
                         print("User profile saved successfully to CloudKit!")
-                        self.authManager.isOnboardingComplete = true
-                        self.authManager.isAuthenticated = true
+                        // Now save the DiscoverableProfile to public database
+                        let discoverableRecord = CKRecord(recordType: "DiscoverableProfile")
+                        discoverableRecord["age"] = self.age
+                        discoverableRecord["gender"] = self.gender
+                        discoverableRecord["cities"] = Array(self.selectedCities)
+                        discoverableRecord["userReference"] = CKRecord.Reference(recordID: userRecordID, action: .deleteSelf)
+                        
+                        publicDatabase.save(discoverableRecord) { (pubRecord, pubError) in
+                            DispatchQueue.main.async {
+                                self.isSaving = false
+                                if let pubError = pubError {
+                                    self.alertMessage = "Failed to save discoverable profile: \(pubError.localizedDescription)"
+                                    self.showingAlert = true
+                                } else {
+                                    self.authManager.isOnboardingComplete = true
+                                    self.authManager.isAuthenticated = true
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -439,6 +457,7 @@ struct OnboardingStepsView: View {
     // NEW: Function to update an existing user profile
     func updateUserProfileInCloudKit(recordID: CKRecord.ID, with newRecordData: CKRecord) {
         let privateDatabase = CKContainer.default().privateCloudDatabase
+        let publicDatabase = CKContainer.default().publicCloudDatabase
         
         privateDatabase.fetch(withRecordID: recordID) { (existingRecord, error) in
             DispatchQueue.main.async {
@@ -463,6 +482,23 @@ struct OnboardingStepsView: View {
                                 self.showingAlert = true
                             } else if let _ = record {
                                 print("User profile updated successfully in CloudKit!")
+                                // Update the DiscoverableProfile
+                                let predicate = NSPredicate(format: "userReference == %@", CKRecord.Reference(recordID: recordID, action: .none))
+                                let query = CKQuery(recordType: "DiscoverableProfile", predicate: predicate)
+                                
+                                publicDatabase.perform(query, inZoneWith: nil) { records, queryError in
+                                    if let existingPubRecord = records?.first {
+                                        existingPubRecord["age"] = newRecordData["age"]
+                                        existingPubRecord["gender"] = newRecordData["gender"]
+                                        existingPubRecord["cities"] = newRecordData["cities"]
+                                        
+                                        publicDatabase.save(existingPubRecord) { _, pubError in
+                                            if let pubError = pubError {
+                                                print("Error updating discoverable profile: \(pubError.localizedDescription)")
+                                            }
+                                        }
+                                    }
+                                }
                                 self.authManager.isOnboardingComplete = true
                                 self.authManager.isAuthenticated = true
                             }
@@ -555,6 +591,7 @@ struct ImagePicker: UIViewControllerRepresentable {
         let picker = UIImagePickerController()
         picker.delegate = context.coordinator
         picker.sourceType = .photoLibrary
+        picker.allowsEditing = true  // Enable cropping/resizing in the picker
         return picker
     }
 
@@ -576,10 +613,10 @@ struct ImagePicker: UIViewControllerRepresentable {
             // Move image processing to a background thread
             DispatchQueue.global(qos: .userInitiated).async {
                 var finalImage: UIImage? = nil
-                if let image = info[.originalImage] as? UIImage {
-                    // If further processing like resizing or format conversion was needed,
-                    // it would happen here on this background thread.
-                    finalImage = image
+                if let editedImage = info[.editedImage] as? UIImage {
+                    finalImage = editedImage  // Use edited (cropped) image if available
+                } else if let originalImage = info[.originalImage] as? UIImage {
+                    finalImage = originalImage
                 }
 
                 // Switch back to the main thread to update the UI and dismiss the picker
@@ -588,10 +625,6 @@ struct ImagePicker: UIViewControllerRepresentable {
                     self.parent.presentationMode.wrappedValue.dismiss()
                 }
             }
-            // Note: Dismissal is now also on the main thread after image processing.
-            // If image processing is quick, this is fine. If it could be long,
-            // consider dismissing earlier on the main thread right after picker.dismiss if UI feels unresponsive.
-            // However, the original code dismissed after setting the image.
         }
     
         // Ensure imagePickerControllerDidCancel is also robust

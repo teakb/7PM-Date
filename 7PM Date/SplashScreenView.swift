@@ -31,7 +31,7 @@ struct SplashScreenView: View {
                 AnimatedClockView() // Using default target of 7 PM
                     .frame(width: 100, height: 100) // Giving it a slightly larger frame than the SF Symbol, adjust as needed
                     .padding()
-                Text("7PM Date")
+                Text("SevenPM")
                     .font(.largeTitle)
                     .bold()
             }
@@ -42,7 +42,7 @@ struct SplashScreenView: View {
         .animation(.easeInOut(duration: 0.3), value: isActive)
         .onAppear {
             // Start a 7-second timer for minimum display time
-            DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 isMinimumTimeElapsed = true
             }
             

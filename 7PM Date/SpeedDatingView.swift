@@ -8,6 +8,7 @@
 import SwiftUI
 import CloudKit
 import Combine // Import Combine for the Timer publisher
+import UserNotifications // Import for notifications
 
 // MARK: - Enums and Models
 enum RSVPState {
@@ -15,16 +16,16 @@ enum RSVPState {
 }
 
 /// Represents the different states a user can be in during a live event.
-enum LiveEventState {
+enum LiveEventState: Equatable {
     case lobby
     case matching
     case inChat(sessionID: CKRecord.ID, match: MatchInfo)
-    case postChat(match: MatchInfo, didConnect: Bool)
+    case postChat(sessionID: CKRecord.ID?, match: MatchInfo, didConnect: Bool)
     case eventEnded
 }
 
 /// A simple struct to hold information about a matched user.
-struct MatchInfo: Identifiable {
+struct MatchInfo: Identifiable, Equatable {
     let id = UUID()
     let recordID: CKRecord.ID?
     let name: String
@@ -33,6 +34,16 @@ struct MatchInfo: Identifiable {
     let bio: String
     let interests: [String]
     let photos: [CKAsset]
+
+    static func == (lhs: MatchInfo, rhs: MatchInfo) -> Bool {
+        return lhs.recordID == rhs.recordID &&
+               lhs.name == rhs.name &&
+               lhs.age == rhs.age &&
+               lhs.homeCity == rhs.homeCity &&
+               lhs.bio == rhs.bio &&
+               lhs.interests == rhs.interests &&
+               lhs.photos.map { $0.fileURL } == rhs.photos.map { $0.fileURL }
+    }
 }
 
 /// Represents a single chat message.
@@ -56,7 +67,7 @@ struct SpeedDatingView: View {
 
     // MARK: - Debug Properties
     #if DEBUG
-    @State private var isDebugMode: Bool = true // Default to true for easy testing
+    @State private var isDebugMode: Bool = false // Changed to false to hide
     @State private var debugTime: Date = Date()
     @State private var seedingStatus: String = ""
     #endif
@@ -77,7 +88,7 @@ struct SpeedDatingView: View {
     private var isLobbyTime: Bool {
         let calendar = Calendar.current
         guard let lobbyStartTime = calendar.date(bySettingHour: 18, minute: 50, second: 0, of: now),
-              let eventStartTime = calendar.date(bySettingHour: 19, minute: 0, second: 0, of: now) else {
+              let eventStartTime = calendar.date(bySettingHour: 19, minute: 2, second: 0, of: now) else {
             return false
         }
         return now >= lobbyStartTime && now < eventStartTime
@@ -90,61 +101,101 @@ struct SpeedDatingView: View {
                 mainContentView()
                 Spacer()
                 #if DEBUG
-                debugPanel()
+                if isDebugMode {
+                    debugPanel()
+                }
                 #endif
             }
             .padding()
             .navigationTitle("Speed Dating")
             .onAppear(perform: fetchUserRSVPStatus)
             .fullScreenCover(isPresented: $isLobbyPresented) {
+                #if DEBUG
                 LiveEventContainerView(isDebugMode: $isDebugMode, debugTime: $debugTime)
+                    .environmentObject(authManager)
+                #else
+                LiveEventContainerView(isDebugMode: .constant(false), debugTime: .constant(Date()))
+                    .environmentObject(authManager)
+                #endif
             }
+            .transition(.opacity)
+            .animation(.easeInOut(duration: 0.5), value: userRSVPStatus)
         }
     }
 
     // MARK: - Subviews and CloudKit Logic
     @ViewBuilder
     private func mainContentView() -> some View {
-        Text("Tonight's Speed Dating").font(.title2).bold().padding(.top)
-        
-        if isLobbyTime {
-            Text("The event lobby is open!")
+        VStack(spacing: 16) {
+            Text("Tonight's Speed Dating").font(.title2).bold().padding(.top)
+            
+            if isLobbyTime {
+                Text("The event lobby is open!")
+                    .font(.headline)
+                    .transition(.slide)
+                Text("Join now to meet people tonight.")
+                    .multilineTextAlignment(.center)
+                    .transition(.opacity)
+                Button("Enter Lobby") {
+                    isLobbyPresented = true
+                }
                 .font(.headline)
-            Text("Join now to meet people tonight.")
-                .multilineTextAlignment(.center)
-            Button("Enter Lobby") {
-                isLobbyPresented = true
+                .padding()
+                .background(Color.green.opacity(0.8))
+                .foregroundColor(.white)
+                .cornerRadius(12)
+                .shadow(color: .green.opacity(0.3), radius: 5)
+                .scaleEffect(1.0)
+                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isLobbyPresented)
+            } else if now < (Calendar.current.date(bySettingHour: 18, minute: 50, second: 0, of: now) ?? Date()) {
+                switch userRSVPStatus {
+                case .unknown, .checking:
+                    ProgressView("Checking your RSVP status...")
+                        .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+                        .scaleEffect(1.5)
+                case .notRSVPd:
+                    Text("Join us tonight at 7 PM! RSVP now.").multilineTextAlignment(.center).padding(.horizontal)
+                        .transition(.move(edge: .bottom))
+                    if isProcessingRSVP {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+                    } else {
+                        rsvpButton()
+                    }
+                case .rsvpConfirmed:
+                    Text("🎉 You're RSVPd for tonight!").font(.headline).foregroundColor(.green)
+                        .scaleEffect(1.1)
+                        .animation(.easeInOut(duration: 0.4), value: userRSVPStatus)
+                    Text("The waiting room will open at 6:50 PM.").multilineTextAlignment(.center)
+                        .transition(.opacity)
+                case .rsvpDisabled:
+                    Text("RSVP is currently unavailable.").foregroundColor(.orange).multilineTextAlignment(.center)
+                        .transition(.scale)
+                }
+            } else {
+                Text("The RSVP window for tonight's event has closed.").multilineTextAlignment(.center).padding(.horizontal)
+                    .transition(.opacity.animation(.easeInOut(duration: 0.5)))
             }
-            .font(.headline)
-            .padding()
-            .background(Color.green)
-            .foregroundColor(.white)
-            .cornerRadius(10)
-        } else if now < (Calendar.current.date(bySettingHour: 18, minute: 50, second: 0, of: now) ?? Date()) {
-            switch userRSVPStatus {
-            case .unknown, .checking:
-                ProgressView("Checking your RSVP status...")
-            case .notRSVPd:
-                Text("Join us tonight at 7 PM! RSVP now.").multilineTextAlignment(.center).padding(.horizontal)
-                if isProcessingRSVP { ProgressView() } else { rsvpButton() }
-            case .rsvpConfirmed:
-                Text("🎉 You're RSVPd for tonight!").font(.headline).foregroundColor(.green)
-                Text("The waiting room will open at 6:50 PM.").multilineTextAlignment(.center)
-            case .rsvpDisabled:
-                Text("RSVP is currently unavailable.").foregroundColor(.orange).multilineTextAlignment(.center)
-            }
-        } else {
-            Text("The RSVP window for tonight's event has closed.").multilineTextAlignment(.center).padding(.horizontal)
-        }
 
-        if let errorMessage = errorMessage {
-            Text("Error: \(errorMessage)").foregroundColor(.red).multilineTextAlignment(.center).padding()
+            if let errorMessage = errorMessage {
+                Text("Error: \(errorMessage)").foregroundColor(.red).multilineTextAlignment(.center).padding()
+                    .background(Color.red.opacity(0.1))
+                    .cornerRadius(8)
+                    .transition(.slide)
+            }
         }
+        .padding()
+        .background(Color(UIColor.systemBackground).opacity(0.9))
+        .cornerRadius(16)
+        .shadow(radius: 10)
     }
 
     private func rsvpButton() -> some View {
         Button("RSVP for Tonight", action: performRSVP)
-            .font(.headline).padding().background(Color.blue).foregroundColor(.white).cornerRadius(10)
+            .font(.headline).padding().background(Color.blue.opacity(0.8)).foregroundColor(.white).cornerRadius(12)
+            .shadow(color: .blue.opacity(0.3), radius: 5)
+            .scaleEffect(1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isProcessingRSVP)
     }
     
     private func fetchUserRSVPStatus() {
@@ -175,6 +226,7 @@ struct SpeedDatingView: View {
                 } else {
                     self.userRSVPStatus = .notRSVPd
                 }
+                self.scheduleNotifications()
             }
         }
     }
@@ -200,6 +252,46 @@ struct SpeedDatingView: View {
                     self.errorMessage = "Failed to RSVP: \(error.localizedDescription)"
                 } else {
                     self.userRSVPStatus = .rsvpConfirmed
+                    self.scheduleNotifications()
+                }
+            }
+        }
+    }
+
+    private func scheduleNotifications() {
+        let calendar = Calendar.current
+        guard let eventTime = calendar.date(bySettingHour: 19, minute: 0, second: 0, of: Date()),
+              let fiveMinBefore = calendar.date(byAdding: .minute, value: -5, to: eventTime),
+              let twoMinBefore = calendar.date(byAdding: .minute, value: -2, to: eventTime) else { return }
+        
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            if settings.authorizationStatus == .authorized {
+                UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["fiveMinBefore", "twoMinBefore"])
+                
+                // 5 min before for everyone
+                let fiveComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: fiveMinBefore)
+                let fiveTrigger = UNCalendarNotificationTrigger(dateMatching: fiveComponents, repeats: false)
+                let fiveContent = UNMutableNotificationContent()
+                fiveContent.title = "7PM Date Event Starting Soon!"
+                fiveContent.body = "The speed dating event starts in 5 minutes. Join now!"
+                fiveContent.sound = .default
+                let fiveRequest = UNNotificationRequest(identifier: "fiveMinBefore", content: fiveContent, trigger: fiveTrigger)
+                UNUserNotificationCenter.current().add(fiveRequest) { error in
+                    if let error = error { print("Error scheduling 5 min notification: \(error)") }
+                }
+                
+                // 2 min before if RSVPd
+                if self.userRSVPStatus == .rsvpConfirmed {
+                    let twoComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: twoMinBefore)
+                    let twoTrigger = UNCalendarNotificationTrigger(dateMatching: twoComponents, repeats: false)
+                    let twoContent = UNMutableNotificationContent()
+                    twoContent.title = "7PM Date Event About to Start!"
+                    twoContent.body = "Your RSVPd event starts in 2 minutes. Enter the lobby!"
+                    twoContent.sound = .default
+                    let twoRequest = UNNotificationRequest(identifier: "twoMinBefore", content: twoContent, trigger: twoTrigger)
+                    UNUserNotificationCenter.current().add(twoRequest) { error in
+                        if let error = error { print("Error scheduling 2 min notification: \(error)") }
+                    }
                 }
             }
         }
@@ -226,7 +318,7 @@ struct SpeedDatingView: View {
             
             Button("Seed Mock Users") {
                 seedingStatus = "Seeding..."
-                CloudKitTestHelper.seedMockUsers { result in
+                CloudKitTestHelper.seedMockUsers(for: authManager.userRecordID) { result in
                     switch result {
                     case .success(let message):
                         seedingStatus = message
@@ -234,6 +326,15 @@ struct SpeedDatingView: View {
                         seedingStatus = "Error: \(error.localizedDescription)"
                     }
                 }
+            }.font(.caption)
+            
+            Button("Delete Account") {
+                deleteAllUserData()
+            }.font(.caption).foregroundColor(.red)
+            
+            Button("Logout") {
+                authManager.signOut()
+                // Optionally show alert or message "Logged out, data saved in iCloud."
             }.font(.caption)
             
             if !seedingStatus.isEmpty {
@@ -247,6 +348,90 @@ struct SpeedDatingView: View {
         if let newTime = Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: Date()) {
             debugTime = newTime
         }
+    }
+    
+    private func deleteAllUserData() {
+        guard let userRecordID = authManager.userRecordID else { return }
+        
+        let privateDB = CKContainer.default().privateCloudDatabase
+        let publicDB = CKContainer.default().publicCloudDatabase
+        
+        // Delete UserProfile
+        privateDB.delete(withRecordID: userRecordID) { _, error in
+            if let error = error {
+                print("Error deleting UserProfile: \(error)")
+            }
+        }
+        
+        // Delete DiscoverableProfile
+        let userRef = CKRecord.Reference(recordID: userRecordID, action: .none)
+        let discPredicate = NSPredicate(format: "userReference == %@", userRef)
+        let discQuery = CKQuery(recordType: "DiscoverableProfile", predicate: discPredicate)
+        publicDB.perform(discQuery, inZoneWith: nil) { records, error in
+            if let records = records {
+                let idsToDelete = records.map { $0.recordID }
+                let operation = CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: idsToDelete)
+                operation.modifyRecordsResultBlock = { result in
+                    if case .failure(let error) = result {
+                        print("Error deleting DiscoverableProfiles: \(error)")
+                    }
+                }
+                publicDB.add(operation)
+            }
+        }
+        
+        // Delete SpeedDateRSVP
+        let rsvpPredicate = NSPredicate(format: "userID == %@", userRecordID.recordName)
+        let rsvpQuery = CKQuery(recordType: "SpeedDateRSVP", predicate: rsvpPredicate)
+        privateDB.perform(rsvpQuery, inZoneWith: nil) { records, error in
+            if let records = records {
+                let idsToDelete = records.map { $0.recordID }
+                let operation = CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: idsToDelete)
+                operation.modifyRecordsResultBlock = { result in
+                    if case .failure(let error) = result {
+                        print("Error deleting RSVPs: \(error)")
+                    }
+                }
+                privateDB.add(operation)
+            }
+        }
+        
+        // Delete ChatDecisions
+        let decisionPredicate = NSPredicate(format: "userRef == %@", userRef)
+        let decisionQuery = CKQuery(recordType: "ChatDecision", predicate: decisionPredicate)
+        publicDB.perform(decisionQuery, inZoneWith: nil) { records, error in
+            if let records = records {
+                let idsToDelete = records.map { $0.recordID }
+                let operation = CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: idsToDelete)
+                operation.modifyRecordsResultBlock = { result in
+                    if case .failure(let error) = result {
+                        print("Error deleting ChatDecisions: \(error)")
+                    }
+                }
+                publicDB.add(operation)
+            }
+        }
+        
+        // Delete BlockedUser (outgoing blocks)
+        let blockedPredicate = NSPredicate(value: true) // Delete all, assuming small number
+        let blockedQuery = CKQuery(recordType: "BlockedUser", predicate: blockedPredicate)
+        privateDB.perform(blockedQuery, inZoneWith: nil) { records, error in
+            if let records = records {
+                let idsToDelete = records.map { $0.recordID }
+                let operation = CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: idsToDelete)
+                operation.modifyRecordsResultBlock = { result in
+                    if case .failure(let error) = result {
+                        print("Error deleting BlockedUsers: \(error)")
+                    }
+                }
+                privateDB.add(operation)
+            }
+        }
+        
+        // After deletion, update auth state
+        authManager.isOnboardingComplete = false
+        authManager.isAuthenticated = false
+        authManager.userRecordID = nil
     }
     #endif
 }
@@ -262,6 +447,7 @@ struct LobbyView: View {
     @State private var showExitAlert = false
     @State private var timeRemaining: TimeInterval = 0
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    @State private var hasScheduledStart = false
 
     private var now: Date {
         #if DEBUG
@@ -271,7 +457,7 @@ struct LobbyView: View {
     }
     
     private var eventStartTime: Date {
-        Calendar.current.date(bySettingHour: 19, minute: 0, second: 0, of: now) ?? Date()
+        Calendar.current.date(bySettingHour: 19, minute: 2, second: 0, of: now) ?? Date()
     }
 
     var body: some View {
@@ -283,14 +469,21 @@ struct LobbyView: View {
                     Spacer()
                     Text("Get Ready!")
                         .font(.largeTitle).fontWeight(.bold).foregroundColor(.white)
+                        .scaleEffect(1.05)
+                        .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: timeRemaining)
                     Text("The event starts in...")
                         .font(.headline).foregroundColor(.gray)
+                        .transition(.opacity)
                     Text(timeRemainingString())
                         .font(.system(size: 80, weight: .bold, design: .monospaced)).foregroundColor(.white)
+                        .transition(.scale)
                     ProgressView().progressViewStyle(CircularProgressViewStyle(tint: .white)).scaleEffect(1.5).padding(.top)
+                        .animation(.easeInOut(duration: 0.3), value: timeRemaining)
                     Spacer()
                     #if DEBUG
-                    debugPanel()
+                    if isDebugMode {
+                        debugPanel()
+                    }
                     #endif
                     Spacer()
                 }
@@ -306,6 +499,14 @@ struct LobbyView: View {
             .onAppear {
                 let remaining = eventStartTime.timeIntervalSince(now)
                 self.timeRemaining = max(0, remaining)
+                if remaining > 0 && !hasScheduledStart {
+                    hasScheduledStart = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
+                        onEventStart()
+                    }
+                } else if remaining <= 0 {
+                    onEventStart()
+                }
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -320,6 +521,7 @@ struct LobbyView: View {
                 Text("If you leave, you will miss tonight's event.")
             }
         }
+        .transition(.opacity.combined(with: .scale))
     }
     
     private func timeRemainingString() -> String {
@@ -340,7 +542,7 @@ struct LobbyView: View {
                 HStack {
                     Button("Lobby Time") { setDebugTime(hour: 18, minute: 55) }
                     Spacer()
-                    Button("Event Start") { setDebugTime(hour: 19, minute: 0) }
+                    Button("Event Start") { setDebugTime(hour: 19, minute: 2) }
                 }.buttonStyle(.bordered).tint(.white).font(.caption)
             }
         }.padding().background(Color.white.opacity(0.1)).cornerRadius(10)
@@ -362,6 +564,15 @@ struct MatchmakingView: View {
     var onNoMatchFound: () -> Void
 
     @State private var statusMessage: String = ""
+    @State private var blockedUserIDs: [CKRecord.ID] = []
+    @State private var showLowMatchSuggestion: Bool = false
+    @State private var showAgeSuggestion: Bool = false
+    @State private var suggestedCity: String?
+    @State private var suggestedLowerBound: Int = 18
+    @State private var suggestedUpperBound: Int = 99
+    @State private var bypassSuggestion: Bool = false
+
+    let allCities = ["Oceanside", "Carlsbad", "Encinitas", "La Jolla", "Hillcrest"]
 
     var body: some View {
         ZStack {
@@ -371,18 +582,120 @@ struct MatchmakingView: View {
                     Text("Finding date \(dateCount + 1) of 3...")
                         .font(.title)
                         .foregroundColor(.white)
+                        .transition(.move(edge: .top))
                     ProgressView().progressViewStyle(CircularProgressViewStyle(tint: .white)).padding()
+                        .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: statusMessage)
                 } else {
                     Text(statusMessage)
                         .font(.title2)
                         .foregroundColor(.white)
                         .multilineTextAlignment(.center)
                         .padding()
+                        .transition(.opacity)
+                }
+                if showLowMatchSuggestion, let city = suggestedCity {
+                    VStack(spacing: 10) {
+                        Text("We found only a few potential matches with your current preferences. Would you like to add \(city) to your interested cities for more options tonight?")
+                            .foregroundColor(.white)
+                            .multilineTextAlignment(.center)
+                            .transition(.scale)
+                        HStack {
+                            Button("Yes, add it") {
+                                addCityToProfile(city: city) {
+                                    showLowMatchSuggestion = false
+                                    findMatchFromCloudKit()
+                                }
+                            }
+                            .padding()
+                            .background(Color.green.opacity(0.8))
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                            .shadow(color: .green.opacity(0.3), radius: 5)
+                            .scaleEffect(1.0)
+                            .animation(.spring(), value: showLowMatchSuggestion)
+
+                            Button("No, continue") {
+                                showLowMatchSuggestion = false
+                                bypassSuggestion = true
+                                findMatchFromCloudKit()
+                            }
+                            .padding()
+                            .background(Color.red.opacity(0.8))
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                            .shadow(color: .red.opacity(0.3), radius: 5)
+                            .scaleEffect(1.0)
+                            .animation(.spring(), value: showLowMatchSuggestion)
+                        }
+                    }
+                    .padding()
+                    .background(Color.gray.opacity(0.2))
+                    .cornerRadius(16)
+                }
+                if showAgeSuggestion {
+                    VStack(spacing: 10) {
+                        Text("Still few matches. Would you like to expand your desired age range to \(suggestedLowerBound)-\(suggestedUpperBound)?")
+                            .foregroundColor(.white)
+                            .multilineTextAlignment(.center)
+                            .transition(.scale)
+                        HStack {
+                            Button("Yes, expand") {
+                                updateAgeRangeInProfile(lower: suggestedLowerBound, upper: suggestedUpperBound) {
+                                    showAgeSuggestion = false
+                                    findMatchFromCloudKit()
+                                }
+                            }
+                            .padding()
+                            .background(Color.green.opacity(0.8))
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                            .shadow(color: .green.opacity(0.3), radius: 5)
+
+                            Button("No, continue") {
+                                showAgeSuggestion = false
+                                bypassSuggestion = true
+                                findMatchFromCloudKit()
+                            }
+                            .padding()
+                            .background(Color.red.opacity(0.8))
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                            .shadow(color: .red.opacity(0.3), radius: 5)
+                        }
+                    }
+                    .padding()
+                    .background(Color.gray.opacity(0.2))
+                    .cornerRadius(16)
                 }
             }
         }
         .onAppear {
-            findMatchFromCloudKit()
+            bypassSuggestion = false
+            fetchBlockedUserIDs {
+                findMatchFromCloudKit()
+            }
+        }
+        .transition(.opacity.animation(.easeInOut(duration: 0.4)))
+    }
+
+    private func fetchBlockedUserIDs(completion: @escaping () -> Void) {
+        guard let currentUserRecordID = authManager.userRecordID else {
+            statusMessage = "Could not identify current user."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { onNoMatchFound() }
+            return
+        }
+
+        let predicate = NSPredicate(format: "blockedUntil > %@", Date() as CVarArg)
+        let query = CKQuery(recordType: "BlockedUser", predicate: predicate)
+
+        let privateDatabase = CKContainer.default().privateCloudDatabase
+        privateDatabase.perform(query, inZoneWith: nil) { records, error in
+            if let records = records {
+                self.blockedUserIDs = records.compactMap { $0["blockedUserRef"] as? CKRecord.Reference }.map { $0.recordID }
+            } else if let error = error {
+                print("Error fetching blocked users: \(error.localizedDescription)")
+            }
+            completion()
         }
     }
 
@@ -407,11 +720,13 @@ struct MatchmakingView: View {
 
             let currentUserGender = currentUserPrivateRecord["gender"] as? String ?? ""
             let currentUserAge = currentUserPrivateRecord["age"] as? Int ?? 0
+            let currentUserHomeCity = currentUserPrivateRecord["homeCity"] as? String ?? ""
+            let currentUserCities = currentUserPrivateRecord["cities"] as? [String] ?? []
             let desiredGenders = currentUserPrivateRecord["desiredGenders"] as? [String] ?? []
             let desiredLowerBound = currentUserPrivateRecord["desiredAgeLowerBound"] as? Int ?? 18
             let desiredUpperBound = currentUserPrivateRecord["desiredAgeUpperBound"] as? Int ?? 99
             
-            let predicate = NSPredicate(format: "gender IN %@ AND age >= %d AND age <= %d", desiredGenders, desiredLowerBound, desiredUpperBound)
+            let predicate = NSPredicate(format: "gender IN %@ AND age >= %d AND age <= %d AND cities CONTAINS %@", desiredGenders, desiredLowerBound, desiredUpperBound, currentUserHomeCity)
             let query = CKQuery(recordType: "DiscoverableProfile", predicate: predicate)
             
             publicDatabase.perform(query, inZoneWith: nil) { records, error in
@@ -425,7 +740,25 @@ struct MatchmakingView: View {
 
                 let potentialPublicMatches = fetchedPublicRecords.filter { record in
                     guard let userRef = record["userReference"] as? CKRecord.Reference else { return false }
-                    return userRef.recordID != currentUserRecordID && !alreadyMatchedRecordIDs.contains(userRef.recordID)
+                    return userRef.recordID != currentUserRecordID && !alreadyMatchedRecordIDs.contains(userRef.recordID) && !self.blockedUserIDs.contains(userRef.recordID)
+                }
+                
+                if !self.bypassSuggestion && potentialPublicMatches.count < 2 {
+                    let availableCities = self.allCities.filter { !currentUserCities.contains($0) }
+                    if !availableCities.isEmpty {
+                        DispatchQueue.main.async {
+                            self.suggestedCity = availableCities.randomElement()
+                            self.showLowMatchSuggestion = true
+                        }
+                        return
+                    } else {
+                        DispatchQueue.main.async {
+                            self.suggestedLowerBound = max(18, desiredLowerBound - 5)
+                            self.suggestedUpperBound = min(99, desiredUpperBound + 5)
+                            self.showAgeSuggestion = true
+                        }
+                        return
+                    }
                 }
                 
                 guard !potentialPublicMatches.isEmpty else {
@@ -460,11 +793,14 @@ struct MatchmakingView: View {
                         let matchDesiredGenders = matchPrivateRecord["desiredGenders"] as? [String] ?? []
                         let matchDesiredLower = matchPrivateRecord["desiredAgeLowerBound"] as? Int ?? 18
                         let matchDesiredUpper = matchPrivateRecord["desiredAgeUpperBound"] as? Int ?? 99
+                        let matchHomeCity = matchPrivateRecord["homeCity"] as? String ?? ""
                         
                         let iFitTheirPrefs = matchDesiredGenders.contains(currentUserGender) &&
                                              (currentUserAge >= matchDesiredLower && currentUserAge <= matchDesiredUpper)
                         
-                        return iFitTheirPrefs
+                        let theyFitMyLocation = currentUserCities.contains(matchHomeCity)
+                        
+                        return iFitTheirPrefs && theyFitMyLocation
                     }
 
                     if let finalMatchRecord = twoWayMatches.randomElement() {
@@ -502,6 +838,45 @@ struct MatchmakingView: View {
             }
         }
     }
+    
+    private func addCityToProfile(city: String, completion: @escaping () -> Void) {
+        guard let userRecordID = authManager.userRecordID else { return }
+        
+        let privateDatabase = CKContainer.default().privateCloudDatabase
+        privateDatabase.fetch(withRecordID: userRecordID) { record, error in
+            guard let record = record, error == nil else { return }
+            
+            var cities = record["cities"] as? [String] ?? []
+            if !cities.contains(city) {
+                cities.append(city)
+                record["cities"] = cities
+                privateDatabase.save(record) { _, error in
+                    if error == nil {
+                        completion()
+                    }
+                }
+            } else {
+                completion()
+            }
+        }
+    }
+    
+    private func updateAgeRangeInProfile(lower: Int, upper: Int, completion: @escaping () -> Void) {
+        guard let userRecordID = authManager.userRecordID else { return }
+        
+        let privateDatabase = CKContainer.default().privateCloudDatabase
+        privateDatabase.fetch(withRecordID: userRecordID) { record, error in
+            guard let record = record, error == nil else { return }
+            
+            record["desiredAgeLowerBound"] = lower
+            record["desiredAgeUpperBound"] = upper
+            privateDatabase.save(record) { _, error in
+                if error == nil {
+                    completion()
+                }
+            }
+        }
+    }
 }
 
 
@@ -514,17 +889,20 @@ struct MessageBubble: View {
                 Spacer()
                 Text(message.text)
                     .padding(10)
-                    .background(Color.blue)
+                    .background(Color.blue.opacity(0.8))
                     .foregroundColor(.white)
                     .cornerRadius(16)
+                    .shadow(color: .blue.opacity(0.2), radius: 3)
             } else {
                 Text(message.text)
                     .padding(10)
-                    .background(Color(.systemGray5))
+                    .background(Color(.systemGray5).opacity(0.8))
                     .cornerRadius(16)
+                    .shadow(color: .gray.opacity(0.2), radius: 3)
                 Spacer()
             }
         }
+        .transition(.slide.combined(with: .opacity))
     }
 }
 
@@ -540,16 +918,20 @@ struct CloudKitImageView: View {
                 image
                     .resizable()
                     .scaledToFill()
+                    .transition(.opacity.animation(.easeInOut(duration: 0.3)))
             } else if isLoading {
                 ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .gray))
             } else {
                 Image(systemName: "photo")
                     .resizable()
                     .scaledToFit()
                     .foregroundColor(.gray)
+                    .transition(.opacity)
             }
         }
         .onAppear(perform: loadImage)
+        .animation(.easeInOut, value: image)
     }
 
     private func loadImage() {
@@ -589,11 +971,13 @@ struct ProfileDetailView: View {
                         .tabViewStyle(.page)
                         .frame(height: 400)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .indexViewStyle(.page(backgroundDisplayMode: .always))
                     } else {
                         Image(systemName: "person.circle.fill")
                             .font(.system(size: 120))
                             .foregroundColor(.gray)
                             .frame(maxWidth: .infinity, alignment: .center)
+                            .transition(.scale)
                     }
                     
                     VStack(alignment: .leading) {
@@ -627,6 +1011,7 @@ struct ProfileDetailView: View {
                                         .padding(8)
                                         .background(Color.blue.opacity(0.2))
                                         .cornerRadius(8)
+                                        .transition(.move(edge: .leading))
                                 }
                             }
                         }
@@ -643,6 +1028,7 @@ struct ProfileDetailView: View {
                     }
                 }
             }
+            .transition(.move(edge: .bottom))
         }
     }
 }
@@ -688,6 +1074,7 @@ struct ChatView: View {
                                 isShowingProfile = true
                             }
                             .buttonStyle(.bordered)
+                            .transition(.opacity)
                         }
                     }
                     
@@ -695,10 +1082,12 @@ struct ChatView: View {
                         .font(.system(size: 24, weight: .bold, design: .monospaced))
                         .foregroundColor(timeRemaining <= 10 ? .red : .primary)
                         .padding(.top, 2)
+                        .animation(.linear(duration: 1.0), value: timeRemaining)
                 }
                 .padding()
                 .frame(maxWidth: .infinity)
                 .background(Color.white.shadow(radius: 2))
+                .transition(.move(edge: .top))
 
                 // Message List
                 ScrollViewReader { proxy in
@@ -724,11 +1113,12 @@ struct ChatView: View {
         }
         .sheet(isPresented: $isShowingProfile) {
             ProfileDetailView(match: match)
+                .presentationDetents([.medium, .large])
         }
         .onReceive(chatTimer) { _ in
             if timeRemaining > 0 {
                 timeRemaining -= 1
-                if timeRemaining <= 120 { // 2 minutes remaining
+                if timeRemaining <= 150 { // 2.5 minutes elapsed
                     withAnimation { canViewProfile = true }
                 }
             } else if !showPostChatButtons {
@@ -740,6 +1130,7 @@ struct ChatView: View {
             fetchMessages()
         }
         .onAppear(perform: fetchMessages)
+        .animation(.default, value: messages)
     }
     
     private func fetchMessages() {
@@ -789,7 +1180,7 @@ struct ChatView: View {
                     messageText = ""
                 } else {
                     // Handle error, maybe show an alert to the user
-                    print("Error sending message: \(error?.localizedDescription ?? "unknown error")")
+                    print("Error sending message: \(error?.localizedDescription ?? "unknown")")
                 }
             }
         }
@@ -799,47 +1190,59 @@ struct ChatView: View {
     private func bottomActionView() -> some View {
         VStack(spacing: 0) {
             #if DEBUG
-            HStack {
-                Button("Skip to Reveal") { timeRemaining = 120 }
-                    .font(.caption)
-                Spacer()
-                Button("End Chat") { timeRemaining = 0 }
-                    .font(.caption)
+            if false {
+                HStack {
+                    Button("Skip to Reveal") { timeRemaining = 150 }
+                        .font(.caption)
+                    Spacer()
+                    Button("End Chat") { timeRemaining = 0 }
+                        .font(.caption)
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 5)
             }
-            .padding(.horizontal)
-            .padding(.bottom, 5)
             #endif
 
             if showPostChatButtons {
                 HStack(spacing: 20) {
                     Button(action: { onDecision(match, false) }) {
                         Image(systemName: "xmark")
-                            .font(.title).padding().background(Color.red)
+                            .font(.title).padding().background(Color.red.opacity(0.8))
                             .foregroundColor(.white).clipShape(Circle())
+                            .shadow(color: .red.opacity(0.3), radius: 5)
                     }
+                    .scaleEffect(1.0)
+                    .animation(.spring(), value: showPostChatButtons)
                     Button(action: { onDecision(match, true) }) {
                         Image(systemName: "heart.fill")
-                            .font(.title).padding().background(Color.green)
+                            .font(.title).padding().background(Color.green.opacity(0.8))
                             .foregroundColor(.white).clipShape(Circle())
+                            .shadow(color: .green.opacity(0.3), radius: 5)
                     }
+                    .scaleEffect(1.0)
+                    .animation(.spring(), value: showPostChatButtons)
                 }
-                .padding().frame(maxWidth: .infinity).background(.white)
+                .padding().frame(maxWidth: .infinity).background(.white.opacity(0.9))
+                .transition(.move(edge: .bottom))
             } else {
                 HStack {
                     TextField("Type a message...", text: $messageText)
                         .padding(.horizontal)
                         .padding(.vertical, 10)
-                        .background(Color(.systemGray6))
+                        .background(Color(.systemGray6).opacity(0.9))
                         .clipShape(Capsule())
+                        .shadow(color: .gray.opacity(0.2), radius: 3)
                     
                     Button(action: sendMessage) {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(.largeTitle)
                     }
                     .disabled(messageText.isEmpty)
+                    .opacity(messageText.isEmpty ? 0.5 : 1.0)
                 }
                 .padding()
-                .background(Color.white)
+                .background(Color.white.opacity(0.9))
+                .transition(.opacity)
             }
         }
     }
@@ -852,9 +1255,13 @@ struct ChatView: View {
 }
 
 struct PostChatView: View {
+    let sessionID: CKRecord.ID?
     let match: MatchInfo
     let didConnect: Bool
     var onFindNext: () -> Void
+
+    @State private var showReportAlert: Bool = false
+    @State private var reportReason: String = ""
 
     var body: some View {
         ZStack {
@@ -863,20 +1270,70 @@ struct PostChatView: View {
                 Image(systemName: didConnect ? "heart.fill" : "xmark.circle.fill")
                     .font(.system(size: 80))
                     .foregroundColor(didConnect ? .green : .red)
+                    .scaleEffect(1.2)
+                    .animation(.spring(response: 0.4, dampingFraction: 0.5), value: didConnect)
                 
                 Text(didConnect ? "You connected with \(match.name)!" : "You passed on \(match.name).")
                     .font(.title)
                     .foregroundColor(.white)
                     .multilineTextAlignment(.center)
+                    .transition(.opacity)
+                
+                if !didConnect {
+                    Button("Report this user") {
+                        showReportAlert = true
+                    }
+                    .font(.headline)
+                    .padding()
+                    .background(Color.orange.opacity(0.8))
+                    .foregroundColor(.white)
+                    .cornerRadius(12)
+                    .shadow(color: .orange.opacity(0.3), radius: 5)
+                    .scaleEffect(1.0)
+                    .animation(.easeInOut, value: showReportAlert)
+                }
                 
                 Button("Find Next Date", action: onFindNext)
                     .font(.headline)
                     .padding()
-                    .background(Color.blue)
+                    .background(Color.blue.opacity(0.8))
                     .foregroundColor(.white)
-                    .cornerRadius(10)
+                    .cornerRadius(12)
+                    .shadow(color: .blue.opacity(0.3), radius: 5)
+                    .transition(.move(edge: .bottom))
             }
             .padding()
+        }
+        .alert("Report User", isPresented: $showReportAlert) {
+            TextField("Reason (optional)", text: $reportReason)
+            Button("Submit") {
+                submitReport()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Please provide a reason if possible.")
+        }
+        .transition(.opacity.animation(.easeInOut(duration: 0.5)))
+    }
+    
+    private func submitReport() {
+        guard let sessionID = sessionID, let reporterID = EnvironmentObject<AuthManager>().wrappedValue.userRecordID, let reportedID = match.recordID else {
+            return
+        }
+        
+        let reportRecord = CKRecord(recordType: "Report")
+        reportRecord["sessionRef"] = CKRecord.Reference(recordID: sessionID, action: .none)
+        reportRecord["reporter"] = CKRecord.Reference(recordID: reporterID, action: .none)
+        reportRecord["reported"] = CKRecord.Reference(recordID: reportedID, action: .none)
+        reportRecord["reason"] = reportReason
+        
+        let publicDatabase = CKContainer.default().publicCloudDatabase
+        publicDatabase.save(reportRecord) { _, error in
+            if let error = error {
+                print("Error submitting report: \(error.localizedDescription)")
+            } else {
+                // Optionally show success alert
+            }
         }
     }
 }
@@ -891,26 +1348,170 @@ struct EventEndView: View {
                 Image(systemName: "sparkles")
                     .font(.system(size: 80))
                     .foregroundColor(.purple)
+                    .rotationEffect(.degrees(360))
+                    .animation(.linear(duration: 2.0).repeatForever(autoreverses: false), value: true)
                 
                 Text("That's all for tonight!")
                     .font(.title)
                     .fontWeight(.bold)
                     .foregroundColor(.white)
                     .multilineTextAlignment(.center)
+                    .transition(.scale)
 
                 Text("Check your Matches tab later to see who you connected with.")
                     .font(.headline)
                     .foregroundColor(.gray)
                     .multilineTextAlignment(.center)
+                    .transition(.opacity)
                 
                 Button("Back to Main Screen", action: onDismiss)
                     .font(.headline)
                     .padding()
-                    .background(Color.blue)
+                    .background(Color.blue.opacity(0.8))
                     .foregroundColor(.white)
-                    .cornerRadius(10)
+                    .cornerRadius(12)
+                    .shadow(color: .blue.opacity(0.3), radius: 5)
+                    .transition(.move(edge: .bottom))
             }
             .padding()
+        }
+        .transition(.opacity.animation(.easeInOut(duration: 0.5)).combined(with: .scale))
+    }
+}
+
+// MARK: - Chat Session Logic
+
+/// **Action Required:** You must create a new Record Type named `ChatDecision` in your CloudKit Public Database.
+/// It must have the following fields and their corresponding indexes:
+/// 1. `sessionRef` (Type: Reference, Action: None, Index: Queryable)
+/// 2. `userRef` (Type: Reference, Action: None)
+/// 3. `didConnect` (Type: Int (0 or 1), Index: Queryable) -> Use Int instead of Bool for better compatibility.
+struct ChatSessionManager {
+    let publicDB = CKContainer.default().publicCloudDatabase
+    let privateDB = CKContainer.default().privateCloudDatabase
+    let authManager: AuthManager
+
+    func processUserDecision(sessionID: CKRecord.ID, matchedUserID: CKRecord.ID?, didConnect: Bool, completion: @escaping (Error?) -> Void) {
+        guard let userRecordID = authManager.userRecordID else {
+            let authError = NSError(domain: "com.7pmdate.app", code: 401, userInfo: [NSLocalizedDescriptionKey: "User is not authenticated."])
+            completion(authError)
+            return
+        }
+
+        // 1. Create and save the user's decision
+        let decisionRecord = CKRecord(recordType: "ChatDecision")
+        decisionRecord["sessionRef"] = CKRecord.Reference(recordID: sessionID, action: .none)
+        decisionRecord["userRef"] = CKRecord.Reference(recordID: userRecordID, action: .none)
+        decisionRecord["didConnect"] = didConnect ? 1 : 0 // Store as 1 for true, 0 for false
+
+        publicDB.save(decisionRecord) { savedRecord, error in
+            if let error = error {
+                completion(error)
+                return
+            }
+
+            if !didConnect, let matchedUserID = matchedUserID {
+                // Create blocked record
+                let blockedRecord = CKRecord(recordType: "BlockedUser")
+                blockedRecord["blockedUserRef"] = CKRecord.Reference(recordID: matchedUserID, action: .none)
+                blockedRecord["blockedUntil"] = Date().addingTimeInterval(30 * 24 * 3600) // 30 days
+                self.privateDB.save(blockedRecord) { _, blockError in
+                    if let blockError = blockError {
+                        print("Error creating blocked record: \(blockError.localizedDescription)")
+                    }
+                }
+            }
+
+            #if DEBUG
+            // In debug mode, if the user says "yes", automatically create a "yes" for the matched user to simulate a mutual connection for testing.
+            if didConnect, let matchedUserID = matchedUserID {
+                let mockDecisionRecord = CKRecord(recordType: "ChatDecision")
+                mockDecisionRecord["sessionRef"] = CKRecord.Reference(recordID: sessionID, action: .none)
+                mockDecisionRecord["userRef"] = CKRecord.Reference(recordID: matchedUserID, action: .none)
+                mockDecisionRecord["didConnect"] = 1
+
+                self.publicDB.save(mockDecisionRecord) { _, mockError in
+                    if let mockError = mockError {
+                        print("Debug-mode error simulating match: \(mockError.localizedDescription)")
+                    }
+                    // Regardless of the mock save, proceed with cleanup check
+                     self.checkAndCleanupSession(sessionID: sessionID, justSavedDecision: savedRecord, completion: completion)
+                }
+            } else {
+                 self.checkAndCleanupSession(sessionID: sessionID, justSavedDecision: savedRecord, completion: completion)
+            }
+            #else
+            // In production, just check for cleanup
+            self.checkAndCleanupSession(sessionID: sessionID, justSavedDecision: savedRecord, completion: completion)
+            #endif
+        }
+    }
+
+    private func checkAndCleanupSession(sessionID: CKRecord.ID, justSavedDecision: CKRecord?, completion: @escaping (Error?) -> Void) {
+        let predicate = NSPredicate(format: "sessionRef == %@", CKRecord.Reference(recordID: sessionID, action: .none))
+        let query = CKQuery(recordType: "ChatDecision", predicate: predicate)
+
+        publicDB.perform(query, inZoneWith: nil) { records, error in
+            if let error = error {
+                completion(error)
+                return
+            }
+
+            guard var decisions = records else {
+                completion(nil) // Should not happen, but safe to exit.
+                return
+            }
+            
+            // To avoid race conditions where a query result is stale, if the record
+            // we just saved isn't in the results yet, add it to our local copy.
+            if let savedDecision = justSavedDecision, !decisions.contains(where: { $0.recordID == savedDecision.recordID }) {
+                decisions.append(savedDecision)
+            }
+
+            // Check if both users decided and if it was NOT a mutual 'yes'
+            let wasMutualConnection = decisions.count >= 2 && decisions.allSatisfy { ($0["didConnect"] as? Int64 ?? 0) == 1 }
+
+            // Condition to delete: EITHER both users decided and it wasn't a match, OR one user has already decided 'no'.
+            let requiresCleanup = (decisions.count >= 2 && !wasMutualConnection) || decisions.contains { ($0["didConnect"] as? Int64 ?? 0) == 0 }
+
+            if requiresCleanup {
+                // Check if the session has been reported
+                let reportPredicate = NSPredicate(format: "sessionRef == %@", CKRecord.Reference(recordID: sessionID, action: .none))
+                let reportQuery = CKQuery(recordType: "Report", predicate: reportPredicate)
+                
+                self.publicDB.perform(reportQuery, inZoneWith: nil) { reportRecords, reportError in
+                    if let reportError = reportError {
+                        print("Error checking for reports: \(reportError.localizedDescription)")
+                        // Proceed with delete even if error checking reports
+                    }
+                    
+                    let isReported = !(reportRecords?.isEmpty ?? true)
+                    
+                    if isReported {
+                        DispatchQueue.main.async {
+                            completion(nil) // Don't delete if reported
+                        }
+                        return
+                    }
+                    
+                    // Not a mutual match, or someone said no, and not reported. Delete the ChatSession record.
+                    self.publicDB.delete(withRecordID: sessionID) { deletedRecordID, deleteError in
+                        DispatchQueue.main.async {
+                            if let deleteError = deleteError {
+                                print("Failed to delete chat session \(sessionID.recordName): \(deleteError.localizedDescription)")
+                            } else {
+                                print("Chat session \(sessionID.recordName) and its messages cleaned up successfully.")
+                            }
+                            completion(deleteError)
+                        }
+                    }
+                }
+            } else {
+                // It's a mutual match OR we are waiting for the other user to decide. Do nothing.
+                DispatchQueue.main.async {
+                    completion(nil)
+                }
+            }
         }
     }
 }
@@ -918,6 +1519,7 @@ struct EventEndView: View {
 
 struct LiveEventContainerView: View {
     @Environment(\.presentationMode) var presentationMode
+    @EnvironmentObject var authManager: AuthManager
     @Binding var isDebugMode: Bool
     @Binding var debugTime: Date
     
@@ -926,47 +1528,83 @@ struct LiveEventContainerView: View {
     // State is now managed here, so it persists between matchmaking views
     @State private var alreadyMatchedRecordIDs: [CKRecord.ID] = []
 
+    private var chatSessionManager: ChatSessionManager {
+        ChatSessionManager(authManager: authManager)
+    }
     
     var body: some View {
-        switch eventState {
-        case .lobby:
-            LobbyView(isDebugMode: $isDebugMode, debugTime: $debugTime, onEventStart: {
-                self.eventState = .matching
-            })
-        case .matching:
-            MatchmakingView(dateCount: dateCount, alreadyMatchedRecordIDs: $alreadyMatchedRecordIDs, onMatchFound: { match, sessionID in
-                self.eventState = .inChat(sessionID: sessionID, match: match)
-            }, onNoMatchFound: {
-                self.eventState = .eventEnded
-            })
-        case .inChat(let sessionID, let match):
-            ChatView(sessionID: sessionID, match: match, onDecision: { completedMatch, didConnect in
-                self.dateCount += 1
-                self.eventState = .postChat(match: completedMatch, didConnect: didConnect)
-            })
-        case .postChat(let match, let didConnect):
-            PostChatView(match: match, didConnect: didConnect, onFindNext: {
-                if dateCount >= 3 {
-                    self.eventState = .eventEnded
-                } else {
-                    self.eventState = .matching
-                }
-            })
-        case .eventEnded:
-            EventEndView(onDismiss: {
-                presentationMode.wrappedValue.dismiss()
-            })
+        Group {
+            switch eventState {
+            case .lobby:
+                LobbyView(isDebugMode: $isDebugMode, debugTime: $debugTime, onEventStart: {
+                    withAnimation(.easeInOut) {
+                        self.eventState = .matching
+                    }
+                })
+            case .matching:
+                MatchmakingView(dateCount: dateCount, alreadyMatchedRecordIDs: $alreadyMatchedRecordIDs, onMatchFound: { match, sessionID in
+                    withAnimation(.spring()) {
+                        self.eventState = .inChat(sessionID: sessionID, match: match)
+                    }
+                }, onNoMatchFound: {
+                    withAnimation {
+                        self.eventState = .eventEnded
+                    }
+                })
+            case .inChat(let sessionID, let match):
+                ChatView(sessionID: sessionID, match: match, onDecision: { completedMatch, didConnect in
+                    // Process the decision and handle message cleanup
+                    chatSessionManager.processUserDecision(sessionID: sessionID, matchedUserID: completedMatch.recordID, didConnect: didConnect) { error in
+                        if let error = error {
+                            // Optionally handle the error, e.g., show an alert to the user
+                            print("Error processing chat decision: \(error.localizedDescription)")
+                        }
+                    }
+                    
+                    // Continue the UI flow as before
+                    self.dateCount += 1
+                    withAnimation(.easeOut) {
+                        self.eventState = .postChat(sessionID: didConnect ? nil : sessionID, match: completedMatch, didConnect: didConnect)
+                    }
+                })
+            case .postChat(let sessionID, let match, let didConnect):
+                PostChatView(sessionID: sessionID, match: match, didConnect: didConnect, onFindNext: {
+                    if dateCount >= 3 {
+                        withAnimation {
+                            self.eventState = .eventEnded
+                        }
+                    } else {
+                        withAnimation(.easeIn) {
+                            self.eventState = .matching
+                        }
+                    }
+                })
+            case .eventEnded:
+                EventEndView(onDismiss: {
+                    presentationMode.wrappedValue.dismiss()
+                })
+            }
         }
+        .animation(.default, value: eventState)
     }
 }
 
 // MARK: - CloudKit Test Helper
 #if DEBUG
 struct CloudKitTestHelper {
-    static func seedMockUsers(completion: @escaping (Result<String, Error>) -> Void) {
+    static func seedMockUsers(for currentUserRecordID: CKRecord.ID?, completion: @escaping (Result<String, Error>) -> Void) {
         let privateDatabase = CKContainer.default().privateCloudDatabase
         let publicDatabase = CKContainer.default().publicCloudDatabase
         
+        // Add a mock profile for the "current user" to ensure matches can be found in testing.
+        // This record will be associated with the currently logged-in iCloud user's ID.
+        guard let currentUserRecordID = currentUserRecordID else {
+            completion(.failure(NSError(domain: "com.7pmdate.app", code: 401, userInfo: [NSLocalizedDescriptionKey: "Cannot seed mock users without a logged-in user."])))
+            return
+        }
+
+        let currentUserData: [String: Any] = ["name": "Alex (Me)", "age": 21, "gender": "Male", "homeCity": "San Diego", "cities": ["San Diego"], "bio": "iOS developer testing an app.", "interests": ["SwiftUI", "Testing"], "desiredGenders": ["Male", "Female"], "desiredAgeLowerBound": 20, "desiredAgeUpperBound": 35]
+
         let mockData: [[String: Any]] = [
             // --- MUTUAL MATCHES (They are Male, 21-30, and want a Male who is 21) ---
             ["name": "Liam", "age": 25, "gender": "Male", "homeCity": "Carlsbad", "cities": ["Carlsbad", "Oceanside"], "bio": "Surfer and software engineer.", "interests": ["Surfing", "Tech"], "desiredGenders": ["Male"], "desiredAgeLowerBound": 21, "desiredAgeUpperBound": 30],
@@ -985,6 +1623,21 @@ struct CloudKitTestHelper {
         let placeholderImageData = placeholderImage.jpegData(compressionQuality: 0.8)!
         let tempDirectory = FileManager.default.temporaryDirectory
         
+        // Create the current user's profile first
+        let currentUserPrivateRecord = CKRecord(recordType: "UserProfile", recordID: currentUserRecordID)
+        for (key, value) in currentUserData {
+             currentUserPrivateRecord[key] = value as? CKRecordValue
+        }
+        privateRecordsToSave.append(currentUserPrivateRecord)
+        
+        let currentUserPublicRecord = CKRecord(recordType: "DiscoverableProfile")
+        currentUserPublicRecord["age"] = currentUserData["age"] as? Int
+        currentUserPublicRecord["gender"] = currentUserData["gender"] as? String
+        currentUserPublicRecord["cities"] = currentUserData["cities"] as? [String]
+        currentUserPublicRecord["userReference"] = CKRecord.Reference(recordID: currentUserRecordID, action: .deleteSelf)
+        publicRecordsToSave.append(currentUserPublicRecord)
+
+
         for userData in mockData {
             let privateRecordID = CKRecord.ID(recordName: UUID().uuidString)
             let privateRecord = CKRecord(recordType: "UserProfile", recordID: privateRecordID)
@@ -1040,4 +1693,8 @@ struct CloudKitTestHelper {
         privateDatabase.add(savePrivateOperation)
     }
 }
+
 #endif
+
+
+

@@ -17,14 +17,13 @@ struct ContentView: View {
                     Label("Speed Dating", systemImage: "heart.fill")
                 }
 
-            ProfileView()
-                .tabItem {
-                    Label("Profile", systemImage: "person.fill")
-                }
-
             MatchesView()
                 .tabItem {
                     Label("Matches", systemImage: "list.star")
+                }
+            ProfileView()
+                .tabItem {
+                    Label("Profile", systemImage: "person.fill")
                 }
         }
     }
