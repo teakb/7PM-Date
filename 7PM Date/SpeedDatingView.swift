@@ -9,6 +9,11 @@ import SwiftUI
 import CloudKit
 import Combine // Import Combine for the Timer publisher
 
+// Define Notification Name for new chat messages
+extension Notification.Name {
+    static let DidReceiveNewChatMessage = Notification.Name("DidReceiveNewChatMessage")
+}
+
 // MARK: - Enums and Models
 enum RSVPState {
     case unknown, notRSVPd, rsvpConfirmed, rsvpDisabled, checking
@@ -40,6 +45,12 @@ struct ChatMessage: Identifiable, Equatable {
     let id: CKRecord.ID
     let text: String
     let isFromCurrentUser: Bool
+    let chatSessionRef: CKRecord.Reference? // Added for associating message to a session
+
+    // Equatable conformance
+    static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
+        return lhs.id == rhs.id
+    }
 }
 
 
@@ -660,11 +671,12 @@ struct ChatView: View {
     @State private var showPostChatButtons = false
     @State private var canViewProfile = false
     @State private var isShowingProfile = false
+    @State private var newMessageObserver: Any? // For NotificationCenter observer
     
     // Timer for chat countdown
     private let chatTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    // Timer to fetch new messages
-    private let messageFetchTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
+    // Timer to fetch new messages - THIS WILL BE REMOVED
+    // private let messageFetchTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
 
     var body: some View {
         ZStack {
@@ -736,13 +748,53 @@ struct ChatView: View {
                 chatTimer.upstream.connect().cancel()
             }
         }
-        .onReceive(messageFetchTimer) { _ in
+        // .onReceive(messageFetchTimer) { _ in // REMOVED Polling
+        //     fetchMessages()
+        // }
+        .onAppear {
+            // Initial fetch of messages
             fetchMessages()
+            // Subscribe to new message notifications
+            newMessageObserver = NotificationCenter.default.addObserver(
+                forName: .DidReceiveNewChatMessage,
+                object: nil,
+                queue: .main
+            ) { notification in
+                handleNewMessageNotification(notification)
+            }
         }
-        .onAppear(perform: fetchMessages)
+        .onDisappear {
+            // Unsubscribe from new message notifications
+            if let observer = newMessageObserver {
+                NotificationCenter.default.removeObserver(observer)
+                newMessageObserver = nil
+            }
+        }
+    }
+
+    private func handleNewMessageNotification(_ notification: Notification) {
+        guard let newMessage = notification.userInfo?["message"] as? ChatMessage else {
+            print("ChatView: Failed to extract ChatMessage from notification.")
+            return
+        }
+
+        // Check if the message belongs to the current chat session
+        guard newMessage.chatSessionRef?.recordID == self.sessionID else {
+            print("ChatView: Received message for different session (\(newMessage.chatSessionRef?.recordID.recordName ?? "N/A")) than current (\(self.sessionID.recordName)).")
+            return
+        }
+
+        // Avoid duplicates
+        if !messages.contains(where: { $0.id == newMessage.id }) {
+            messages.append(newMessage)
+            // messages.sort(by: { $0.timestamp < $1.timestamp }) // If timestamp becomes part of ChatMessage
+            print("ChatView: New message \(newMessage.id) added to session \(self.sessionID.recordName).")
+        } else {
+            print("ChatView: Duplicate message \(newMessage.id) for session \(self.sessionID.recordName) not added.")
+        }
     }
     
-    private func fetchMessages() {
+    private func fetchMessages() { // This can still be used for initial load
         guard let _ = authManager.userRecordID else { return }
         
         let predicate = NSPredicate(format: "chatSessionRef == %@", CKRecord.Reference(recordID: sessionID, action: .none))
@@ -757,15 +809,11 @@ struct ChatView: View {
             }
             
             DispatchQueue.main.async {
-                let newMessages = records.map { record -> ChatMessage in
+                self.messages = records.map { record -> ChatMessage in
                     let text = record["text"] as? String ?? ""
                     let senderRef = record.creatorUserRecordID
-                    return ChatMessage(id: record.recordID, text: text, isFromCurrentUser: senderRef?.recordName == authManager.userRecordID?.recordName)
-                }
-                
-                // Only update if there are new messages to avoid constant UI refreshes
-                if newMessages.count > self.messages.count {
-                    self.messages = newMessages
+                    let chatSessionRef = record["chatSessionRef"] as? CKRecord.Reference
+                    return ChatMessage(id: record.recordID, text: text, isFromCurrentUser: senderRef?.recordName == authManager.userRecordID?.recordName, chatSessionRef: chatSessionRef)
                 }
             }
         }
@@ -777,14 +825,15 @@ struct ChatView: View {
         
         let messageRecord = CKRecord(recordType: "ChatMessage")
         messageRecord["text"] = messageText
-        messageRecord["chatSessionRef"] = CKRecord.Reference(recordID: sessionID, action: .deleteSelf)
+        let sessionReference = CKRecord.Reference(recordID: sessionID, action: .deleteSelf)
+        messageRecord["chatSessionRef"] = sessionReference
         
         let publicDatabase = CKContainer.default().publicCloudDatabase
         publicDatabase.save(messageRecord) { record, error in
             DispatchQueue.main.async {
                 if let record = record {
                     // Add the message locally immediately for a responsive feel
-                    let newMessage = ChatMessage(id: record.recordID, text: messageText, isFromCurrentUser: true)
+                    let newMessage = ChatMessage(id: record.recordID, text: messageText, isFromCurrentUser: true, chatSessionRef: sessionReference)
                     messages.append(newMessage)
                     messageText = ""
                 } else {
@@ -918,6 +967,7 @@ struct EventEndView: View {
 
 struct LiveEventContainerView: View {
     @Environment(\.presentationMode) var presentationMode
+    @EnvironmentObject var authManager: AuthManager // Ensure AuthManager is in the environment
     @Binding var isDebugMode: Bool
     @Binding var debugTime: Date
     
@@ -941,6 +991,9 @@ struct LiveEventContainerView: View {
             })
         case .inChat(let sessionID, let match):
             ChatView(sessionID: sessionID, match: match, onDecision: { completedMatch, didConnect in
+                // MARK: Store Match Decision
+                saveMatchDecision(chatSessionID: sessionID, matchedUser: completedMatch, decision: didConnect)
+
                 self.dateCount += 1
                 self.eventState = .postChat(match: completedMatch, didConnect: didConnect)
             })
@@ -956,6 +1009,162 @@ struct LiveEventContainerView: View {
             EventEndView(onDismiss: {
                 presentationMode.wrappedValue.dismiss()
             })
+        }
+    }
+
+    private func saveMatchDecision(chatSessionID: CKRecord.ID, matchedUser: MatchInfo, decision: Bool) {
+        guard let currentUserRecordID = authManager.userRecordID else {
+            print("Error: Current user RecordID not found. Cannot save match decision.")
+            return
+        }
+        guard let matchedUserRecordID = matchedUser.recordID else {
+            print("Error: Matched user RecordID not found. Cannot save match decision.")
+            return
+        }
+
+        let decisionRecord = CKRecord(recordType: "MatchDecision")
+        decisionRecord["chatSessionRef"] = CKRecord.Reference(recordID: chatSessionID, action: .none)
+        decisionRecord["decidingUserRef"] = CKRecord.Reference(recordID: currentUserRecordID, action: .none)
+        decisionRecord["matchedUserRef"] = CKRecord.Reference(recordID: matchedUserRecordID, action: .none)
+        decisionRecord["didConnect"] = decision as CKRecordValue // Store as Boolean
+        decisionRecord["decisionTimestamp"] = Date() as CKRecordValue
+
+        let publicDatabase = CKContainer.default().publicCloudDatabase
+        publicDatabase.save(decisionRecord) { record, error in
+            if let error = error {
+                print("Error saving MatchDecision: \(error.localizedDescription)")
+                // Even if saving decision fails, the UI flow continues.
+                // Consider if more robust error handling is needed here.
+            } else {
+                print("Successfully saved MatchDecision for session \(chatSessionID.recordName) with user \(matchedUserRecordID.recordName). Decision: \(decision)")
+                // After successfully saving, check for mutual match and handle messages.
+                self.checkMatchAndHandleMessages(for: chatSessionID, currentUserRecordID: currentUserRecordID, matchedUserRecordID: matchedUserRecordID)
+            }
+        }
+    }
+
+    private func checkMatchAndHandleMessages(for chatSessionID: CKRecord.ID, currentUserRecordID: CKRecord.ID, matchedUserRecordID: CKRecord.ID) {
+        let publicDatabase = CKContainer.default().publicCloudDatabase
+        let predicate = NSPredicate(format: "chatSessionRef == %@", CKRecord.Reference(recordID: chatSessionID, action: .none))
+        let query = CKQuery(recordType: "MatchDecision", predicate: predicate)
+
+        publicDatabase.perform(query, inZoneWith: nil) { records, error in
+            if let error = error {
+                print("Error fetching MatchDecisions for session \(chatSessionID.recordName): \(error.localizedDescription)")
+                return
+            }
+
+            guard let decisionRecords = records else {
+                print("No MatchDecision records found for session \(chatSessionID.recordName), though expected at least one.")
+                return
+            }
+
+            print("Fetched \(decisionRecords.count) MatchDecision records for session \(chatSessionID.recordName).")
+
+            if decisionRecords.count == 2 {
+                var currentUserDecision = false
+                var matchedUserDecision = false
+                var decisionsFound = 0
+
+                for record in decisionRecords {
+                    if let decidingUserRef = record["decidingUserRef"] as? CKRecord.Reference,
+                       let didConnect = record["didConnect"] as? Bool {
+                        if decidingUserRef.recordID.recordName == currentUserRecordID.recordName {
+                            currentUserDecision = didConnect
+                            decisionsFound += 1
+                        } else if decidingUserRef.recordID.recordName == matchedUserRecordID.recordName {
+                            matchedUserDecision = didConnect
+                            decisionsFound += 1
+                        }
+                    }
+                }
+
+                if decisionsFound == 2 { // Ensure both decisions were properly identified
+                    if currentUserDecision && matchedUserDecision {
+                        print("Mutual match for session \(chatSessionID.recordName)! Messages will be kept.")
+                    } else {
+                        print("Not a mutual match for session \(chatSessionID.recordName). Deleting messages.")
+                        self.deleteChatMessages(for: chatSessionID)
+                    }
+                } else {
+                     print("Could not definitively determine both users' decisions from the fetched records for session \(chatSessionID.recordName). Found \(decisionsFound) valid decisions.")
+                }
+            } else if decisionRecords.count == 1 {
+                print("Only one decision found for session \(chatSessionID.recordName). Waiting for the other user.")
+                // Optionally, check if the single decision is from the current user and is a 'pass'.
+                // If so, and if business logic allowed immediate deletion on one user's 'pass',
+                // messages could be deleted here. However, current logic waits for two decisions.
+            } else {
+                 print("Unexpected number of decisions (\(decisionRecords.count)) found for session \(chatSessionID.recordName). Expected 1 or 2.")
+            }
+        }
+    }
+
+    private func deleteChatMessages(for chatSessionID: CKRecord.ID) {
+        let publicDatabase = CKContainer.default().publicCloudDatabase
+        let predicate = NSPredicate(format: "chatSessionRef == %@", CKRecord.Reference(recordID: chatSessionID, action: .none))
+        let query = CKQuery(recordType: "ChatMessage", predicate: predicate)
+
+        publicDatabase.perform(query, inZoneWith: nil) { records, error in
+            if let error = error {
+                print("Error fetching ChatMessages for deletion in session \(chatSessionID.recordName): \(error.localizedDescription)")
+                return
+            }
+
+            guard let chatMessageRecords = records, !chatMessageRecords.isEmpty else {
+                print("No ChatMessages found to delete for session \(chatSessionID.recordName).")
+                return
+            }
+
+            let recordIDsToDelete = chatMessageRecords.map { $0.recordID }
+            print("Attempting to delete \(recordIDsToDelete.count) messages for session \(chatSessionID.recordName).")
+
+            let modifyRecordsOperation = CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: recordIDsToDelete)
+
+            // Handle per-record errors if needed, though CloudKit often gives a single error for the batch.
+            modifyRecordsOperation.perRecordDeleteBlock = { recordID, error in
+                 if let error = error {
+                    print("Error deleting message \(recordID.recordName): \((error as? CKError)?.localizedDescription ?? error.localizedDescription)")
+                 } else {
+                    // print("Successfully marked message \(recordID.recordName) for deletion.")
+                 }
+            }
+
+            modifyRecordsOperation.modifyRecordsResultBlock = { result in
+                switch result {
+                case .success:
+                    print("Successfully deleted \(recordIDsToDelete.count) chat messages for session \(chatSessionID.recordName).")
+                case .failure(let error):
+                     // Check for partial failures if specific per-record errors are not handled or are insufficient
+                    if let ckError = error as? CKError, let partialErrors = ckError.partialErrorsByItemID {
+                        var allRecordsSuccessfullyDeleted = true
+                        for (recordID, partialError) in partialErrors {
+                            if let partialCKError = partialError as? CKError {
+                                // "Record not found" (serverRecordChanged or unknownItem) can be ignored if another user already deleted them.
+                                if partialCKError.code == .serverRecordChanged || partialCKError.code == .unknownItem {
+                                    print("Message \(recordID.recordName) was already deleted or changed by another user.")
+                                } else {
+                                    allRecordsSuccessfullyDeleted = false
+                                    print("Failed to delete message \(recordID.recordName): \(partialCKError.localizedDescription)")
+                                }
+                            } else {
+                                allRecordsSuccessfullyDeleted = false
+                                print("Failed to delete message \(recordID.recordName): \(partialError.localizedDescription)")
+                            }
+                        }
+                        if allRecordsSuccessfullyDeleted && partialErrors.count == recordIDsToDelete.count {
+                             print("All messages for session \(chatSessionID.recordName) were already deleted or handled.")
+                        } else if allRecordsSuccessfullyDeleted {
+                             print("Some messages for session \(chatSessionID.recordName) successfully deleted, others already gone.")
+                        } else {
+                             print("Partial failure deleting messages for session \(chatSessionID.recordName). Error: \(error.localizedDescription)")
+                        }
+                    } else {
+                        print("Failed to delete chat messages for session \(chatSessionID.recordName): \(error.localizedDescription)")
+                    }
+                }
+            }
+            publicDatabase.add(modifyRecordsOperation)
         }
     }
 }
