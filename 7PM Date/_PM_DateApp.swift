@@ -9,7 +9,7 @@ import SwiftUI
 import AuthenticationServices // Keeping this import as it's likely used by AuthManager
 import Combine              // Keeping this import as it's likely used by AuthManager
 import UserNotifications // Import UserNotifications
-import Firebase // Import Firebase
+// Removed Firebase import
 
 @main
 struct _PM_DateApp: App {
@@ -18,7 +18,7 @@ struct _PM_DateApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate // Add this line
 
     init() { // Add init if not present, or modify existing one
-        FirebaseApp.configure() // Ensure Firebase is configured
+        // Removed FirebaseApp.configure()
         // Request notification authorization
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error = error {
@@ -105,7 +105,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let tokenString = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
         print("Device Token: \(tokenString)")
-        // You might want to use Auth.auth().setAPNSToken(deviceToken, type: .unknown) if using Firebase for Auth/FCM
+        // Removed Firebase Auth related comment: // You might want to use Auth.auth().setAPNSToken(deviceToken, type: .unknown) if using Firebase for Auth/FCM
 
         // Subscribe to CloudKit for new messages
         subscribeToNewMessages()
